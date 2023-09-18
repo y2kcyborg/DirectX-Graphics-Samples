@@ -161,7 +161,7 @@ void CalculateRayDifferentials(out float2 ddx_uv, out float2 ddy_uv, in float2 u
 }
 
 // Forward declaration.
-float CheckersTextureBoxFilter(in float2 uv, in float2 dpdx, in float2 dpdy, in UINT ratio);
+float CheckersTextureBoxFilter(in float2 uv, in float2 dpdx, in float2 dpdy);
 
 // Return analytically integrated checkerboard texture (box filter).
 float AnalyticalCheckersTexture(in float3 hitPosition, in float3 surfaceNormal, in float3 cameraPosition, in float4x4 projectionToWorld)
@@ -171,7 +171,7 @@ float AnalyticalCheckersTexture(in float3 hitPosition, in float3 surfaceNormal, 
     float2 uv = TexCoords(hitPosition);
 
     CalculateRayDifferentials(ddx_uv, ddy_uv, uv, hitPosition, surfaceNormal, cameraPosition, projectionToWorld);
-    return CheckersTextureBoxFilter(uv, ddx_uv, ddy_uv, 50);
+    return CheckersTextureBoxFilter(uv, ddx_uv, ddy_uv);
 }
 
 // Fresnel reflectance - schlick approximation.
