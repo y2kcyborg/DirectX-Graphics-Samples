@@ -110,7 +110,7 @@ float4 TraceRadianceRay(in Ray ray, in UINT remainingRayRecursionDepth)
     // Note: make sure to enable face culling so as to avoid surface face fighting.
     rayDesc.TMin = 0;
     rayDesc.TMax = 10000;
-    RayPayload rayPayload = { float4(0, 0, 0, 0), remainingRayRecursionDepth - 1 };
+    RayPayload rayPayload = { float4(0, 0, 0, 0), remainingRayRecursionDepth - 1, -1.f };
     TraceRay(g_scene,
         RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
         TraceRayParameters::InstanceMask,
@@ -222,10 +222,12 @@ void MyClosestHitShader_Triangle(inout RayPayload rayPayload, in BuiltInTriangle
     float4 color = checkers * (phongColor + reflectedColor);
 
     // Apply visibility falloff.
+    // TODO remove
     float t = RayTCurrent();
     color = lerp(color, BackgroundColor, 1.0 - exp(-0.000002*t*t*t));
 
     rayPayload.color = color;
+    rayPayload.t = t;
 }
 
 [shader("closesthit")]
@@ -257,10 +259,12 @@ void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitive
     float4 color = phongColor + reflectedColor;
 
     // Apply visibility falloff.
+    // TODO remove
     float t = RayTCurrent();
     color = lerp(color, BackgroundColor, 1.0 - exp(-0.000002*t*t*t));
 
     rayPayload.color = color;
+    rayPayload.t = t;
 }
 
 //***************************************************************************
