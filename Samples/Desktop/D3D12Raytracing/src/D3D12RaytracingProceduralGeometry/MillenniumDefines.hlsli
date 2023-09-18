@@ -143,9 +143,9 @@ float3 ExponentialHaze(RayInfo rayInfo)
     // tau is the base optical depth
     // Y is up
     // Density
-    float A = 0.00065;
+    float A = 0.005;
     // Falloff
-    float B = 0.013;
+    float B = 0.2;
     // Offset
     float Y = 0;
 

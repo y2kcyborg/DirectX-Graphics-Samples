@@ -331,7 +331,7 @@ float4 SkyBox(inout RayInfo rayInfo, float elapsedTime)
     float3 originWS = rayInfo.originWS;
     float3 directionWS = rayInfo.directionWS;
     
-    const float waterY = -0.05f;
+    const float waterY = -1.f;
 
     // t where ray intersects water surface
     float t = (directionWS.y == 0) 
