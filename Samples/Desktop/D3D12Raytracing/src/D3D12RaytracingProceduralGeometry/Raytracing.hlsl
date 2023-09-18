@@ -110,7 +110,7 @@ float4 TraceRadianceRay(in Ray ray, in UINT remainingRayRecursionDepth)
     // Note: make sure to enable face culling so as to avoid surface face fighting.
     rayDesc.TMin = 0;
     rayDesc.TMax = 10000;
-    RayPayload rayPayload = { float4(0, 0, 0, 0), remainingRayRecursionDepth - 1, -1.f };
+    RayPayload rayPayload = { float4(0, 0, 0, 0), remainingRayRecursionDepth - 1, -1.f, 0U };
     TraceRay(g_scene,
         RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
         TraceRayParameters::InstanceMask,

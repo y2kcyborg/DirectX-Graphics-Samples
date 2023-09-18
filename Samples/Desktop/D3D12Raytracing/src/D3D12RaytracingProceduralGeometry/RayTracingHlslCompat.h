@@ -62,6 +62,7 @@ struct RayPayload
     XMFLOAT4 color;
     UINT   remainingDepth;
     float t;
+    UINT flags;
 };
 
 struct ShadowRayPayload
