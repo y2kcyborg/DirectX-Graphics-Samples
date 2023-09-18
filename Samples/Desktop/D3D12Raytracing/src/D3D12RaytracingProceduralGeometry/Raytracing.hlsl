@@ -95,9 +95,9 @@ float4 CalculatePhongLighting(in float4 albedo, in float3 normal, in bool isInSh
 //***************************************************************************
 
 // Trace a radiance ray into the scene and returns a shaded color.
-float4 TraceRadianceRay(in Ray ray, in UINT currentRayRecursionDepth)
+float4 TraceRadianceRay(in Ray ray, in UINT remainingRayRecursionDepth)
 {
-    if (currentRayRecursionDepth >= MAX_RAY_RECURSION_DEPTH)
+    if (remainingRayRecursionDepth == 0)
     {
         return float4(0, 0, 0, 0);
     }
@@ -110,7 +110,7 @@ float4 TraceRadianceRay(in Ray ray, in UINT currentRayRecursionDepth)
     // Note: make sure to enable face culling so as to avoid surface face fighting.
     rayDesc.TMin = 0;
     rayDesc.TMax = 10000;
-    RayPayload rayPayload = { float4(0, 0, 0, 0), currentRayRecursionDepth + 1 };
+    RayPayload rayPayload = { float4(0, 0, 0, 0), remainingRayRecursionDepth - 1 };
     TraceRay(g_scene,
         RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
         TraceRayParameters::InstanceMask,
@@ -123,9 +123,9 @@ float4 TraceRadianceRay(in Ray ray, in UINT currentRayRecursionDepth)
 }
 
 // Trace a shadow ray and return true if it hits any geometry.
-bool TraceShadowRayAndReportIfHit(in Ray ray, in UINT currentRayRecursionDepth)
+bool TraceShadowRayAndReportIfHit(in Ray ray, in UINT remainingRayRecursionDepth)
 {
-    if (currentRayRecursionDepth >= MAX_RAY_RECURSION_DEPTH)
+    if (remainingRayRecursionDepth == 0U)
     {
         return false;
     }
@@ -168,8 +168,8 @@ void MyRaygenShader()
     Ray ray = GenerateCameraRay(DispatchRaysIndex().xy, g_sceneCB.cameraPosition.xyz, g_sceneCB.projectionToWorld);
  
     // Cast a ray into the scene and retrieve a shaded color.
-    UINT currentRecursionDepth = 0;
-    float4 color = TraceRadianceRay(ray, currentRecursionDepth);
+    UINT remainingRecursionDepth = MAX_RAY_RECURSION_DEPTH;
+    float4 color = TraceRadianceRay(ray, remainingRecursionDepth);
 
     // Write the raytraced color to the output texture.
     g_renderTarget[DispatchRaysIndex().xy] = color;
@@ -201,7 +201,7 @@ void MyClosestHitShader_Triangle(inout RayPayload rayPayload, in BuiltInTriangle
     // Trace a shadow ray.
     float3 hitPosition = HitWorldPosition();
     Ray shadowRay = { hitPosition, normalize(g_sceneCB.lightPosition.xyz - hitPosition) };
-    bool shadowRayHit = TraceShadowRayAndReportIfHit(shadowRay, rayPayload.recursionDepth);
+    bool shadowRayHit = TraceShadowRayAndReportIfHit(shadowRay, rayPayload.remainingDepth);
 
     float checkers = AnalyticalCheckersTexture(HitWorldPosition(), triangleNormal, g_sceneCB.cameraPosition.xyz, g_sceneCB.projectionToWorld);
 
@@ -211,7 +211,7 @@ void MyClosestHitShader_Triangle(inout RayPayload rayPayload, in BuiltInTriangle
     {
         // Trace a reflection ray.
         Ray reflectionRay = { HitWorldPosition(), reflect(WorldRayDirection(), triangleNormal) };
-        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.recursionDepth);
+        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.remainingDepth);
 
         float3 fresnelR = FresnelReflectanceSchlick(WorldRayDirection(), triangleNormal, l_materialCB.albedo.xyz);
         reflectedColor = l_materialCB.reflectanceCoef * float4(fresnelR, 1) * reflectionColor;
@@ -238,7 +238,7 @@ void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitive
     // Trace a shadow ray.
     float3 hitPosition = HitWorldPosition();
     Ray shadowRay = { hitPosition, normalize(g_sceneCB.lightPosition.xyz - hitPosition) };
-    bool shadowRayHit = TraceShadowRayAndReportIfHit(shadowRay, rayPayload.recursionDepth);
+    bool shadowRayHit = TraceShadowRayAndReportIfHit(shadowRay, rayPayload.remainingDepth);
 
     // Reflected component.
     float4 reflectedColor = float4(0, 0, 0, 0);
@@ -246,7 +246,7 @@ void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitive
     {
         // Trace a reflection ray.
         Ray reflectionRay = { HitWorldPosition(), reflect(WorldRayDirection(), attr.normal) };
-        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.recursionDepth);
+        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.remainingDepth);
 
         float3 fresnelR = FresnelReflectanceSchlick(WorldRayDirection(), attr.normal, l_materialCB.albedo.xyz);
         reflectedColor = l_materialCB.reflectanceCoef * float4(fresnelR, 1) * reflectionColor;
