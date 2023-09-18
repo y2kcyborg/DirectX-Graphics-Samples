@@ -96,9 +96,9 @@ float4 CalculatePhongLighting(in float4 albedo, in float3 normal, in bool isInSh
 //***************************************************************************
 
 // Trace a radiance ray into the scene and returns a shaded color.
-float4 TraceRadianceRay(in Ray ray, in UINT remainingRayRecursionDepth)
+float4 TraceRadianceRay(in Ray ray, in UINT remainingRayRecursionDepth, bool primary)
 {
-    if (remainingRayRecursionDepth == 0)
+    if (remainingRayRecursionDepth == 0U)
     {
         return float4(0, 0, 0, 0);
     }
@@ -111,7 +111,9 @@ float4 TraceRadianceRay(in Ray ray, in UINT remainingRayRecursionDepth)
     // Note: make sure to enable face culling so as to avoid surface face fighting.
     rayDesc.TMin = 0;
     rayDesc.TMax = 10000;
-    RayPayload rayPayload = { float4(0, 0, 0, 0), remainingRayRecursionDepth - 1, -1.f, 0U };
+    uint flags = 0U;
+    if (primary) { flags += MC_RAYFLAG_PRIMARY; }
+    RayPayload rayPayload = { float4(1, 1, 1, 1), remainingRayRecursionDepth - 1, -1.f, flags };
     TraceRay(g_scene,
         RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
         TraceRayParameters::InstanceMask,
@@ -158,6 +160,212 @@ bool TraceShadowRayAndReportIfHit(in Ray ray, in UINT remainingRayRecursionDepth
     return shadowPayload.hit;
 }
 
+// "The rest of the owl"
+float4 ShadeSurface(float3 positionWS, BRDF surface, inout RayInfo rayInfo, float3 lightPos)
+{
+    float3 _AmbientLightColor = { 1, 1, 1 };
+    // Everything is organised as a sum-of-products for the final result.
+    // This allows us to use perceptual thresholds to decide whether to cast
+    // further rays.
+
+    float3 returnCol = { 0, 0, 0 };
+    
+    float3 fogCol = { 0, 0, 0 };
+    // Bryce fog model has alpha for each channel
+    float3 fogAlpha = { 0, 0, 0 };
+
+    // we can calculate the haze *early* with float3 col and float3 alpha for the haze.
+    CalcWorldHaze(rayInfo, fogCol, fogAlpha);
+    
+    const float3 fogMul = 1.0f - fogAlpha;
+
+    /////////////////
+    // Light: Fog emission
+    returnCol += fogCol * fogAlpha;
+
+    /////////////////
+    // Light: Emission
+    {
+        // This version would makes thrust lighting not additive, looks weird
+        // const float3 light_emitted_mul = fogMul * surface.baseColor.rgb * surface.baseColor.a;
+        const float3 light_emitted_mul = fogMul * surface.baseColor.rgb;
+        returnCol += light_emitted_mul * surface.luminosity;
+    }
+
+    /////////////////
+    // Light: Ambient
+    // emissive/ambient contribution
+    {
+        const float3 light_ambient_diffuse_mul = fogMul * surface.baseColor.rgb * surface.baseColor.a * surface.diffuse;
+        returnCol += light_ambient_diffuse_mul * _AmbientLightColor.rgb;
+    }
+    
+    
+    // Consider inlining into both places that use this to reduce live state
+    const float3 light_reflection_common_mul = fogMul * lerp(float3(1, 1, 1), surface.baseColor.rgb, surface.metallicity);
+    
+    /////////////////
+    // Light: Specular, Diffuse
+    // Lighting/shadow
+    
+    // Is the surface affected by lights at all?
+    // TODO replace this check with full contrib cutoff test?
+    if (surface.diffuse + surface.specular > 0) {
+        const float3 light_diffuse_mul = fogMul * surface.baseColor.rgb * surface.baseColor.a * surface.diffuse;
+        const float3 light_specular_mul = light_reflection_common_mul * surface.specular;
+
+        // Directional Lights
+        {
+            const float3 lightDir = normalize(positionWS - lightPos);
+            const float3 lightCol = float3(1,1,1);
+            const float shadowIntensity = 1;
+
+            // For each light, compute shadow ray
+
+            const float3 viewDir = -rayInfo.directionWS;
+            const float3 totalLight =
+                light_diffuse_mul * LightingLambert(lightCol, lightDir, surface.shadingNormalWS)
+                + light_specular_mul * LightingSpecular(lightCol, lightDir, surface.shadingNormalWS, viewDir, 1 - surface.roughness);
+            
+            // Make shadow ray for directional light.
+            bool hit = false;
+
+            float3 shadingHit = (1 - shadowIntensity) * totalLight;
+            float3 shadingNoHit = totalLight;
+            float3 shading = shadingNoHit;
+            
+            if (surface.flags8 & MC_BRDF_RECEIVES_SHADOW) {
+                // Also consider check for rayInfo.flags & MC_RAYFLAG_PRIMARY which makes us always cast
+                float cutoff = MC_MIN_PERCEPTUAL_DELTA;
+                if ((rayInfo.flags & MC_RAYFLAG_PRIMARY) == 0) { cutoff = max(cutoff, 0.03); }
+                if (PerceptualDelta(rayInfo.color * shadingHit, rayInfo.color * shadingNoHit) >= cutoff) {
+                    Ray shadowRay = { OffsetRay(positionWS, surface.geometricNormalWS), lightDir };
+                    hit = TraceShadowRayAndReportIfHit(shadowRay, rayInfo.remainingDepth);
+                }
+            }
+
+            if (hit) { shading = shadingHit; }
+            
+            returnCol += shading;
+        }
+    }
+    
+    /////////////////
+    // Reflections and Transmission
+    if ((surface.flags8 & (MC_BRDF_HAS_REFLECTION | MC_BRDF_HAS_REFRACTION)) &&
+        (surface.reflectivity > 0 || surface.baseColor.a < 1))
+    {
+        float3 outwardNormal;
+        float ior; // used for refracted dir
+        float cosine; // used for schlick approximation
+        const float IdotN = dot(rayInfo.directionWS, surface.shadingNormalWS);
+        if (-IdotN > 0.0f)
+        {
+            // Ray exiting the surface
+            outwardNormal = surface.shadingNormalWS;
+            ior = 1.0f / surface.ior;
+            cosine = surface.ior * -IdotN;
+        }
+        else
+        {
+            // Ray entering the surface
+            outwardNormal = -surface.shadingNormalWS;
+            ior = surface.ior;
+            cosine = IdotN;
+        }
+
+        float fresnelReflection = saturate(schlick(cosine, surface.ior));
+
+        // As a stylistic choice, opaque objects have no fresnel reflection
+        const float reflectivity = (1 - surface.baseColor.a) * fresnelReflection + surface.reflectivity;
+
+        const float3 reflectedDir = reflect(rayInfo.directionWS, surface.shadingNormalWS);
+        const float3 refractedDir = refract(rayInfo.directionWS, outwardNormal, ior);
+
+        if (surface.flags8 & MC_BRDF_HAS_REFLECTION)
+        {
+            const float3 light_reflected_mul = light_reflection_common_mul * reflectivity;
+            float3 reflection = fogCol;
+
+            // Diff between reflecting pure white and pure black
+            float cutoff = max(0.04, MC_MIN_PERCEPTUAL_DELTA);
+            if (PerceptualDelta(rayInfo.color * light_reflected_mul, float3(0,0,0)) > cutoff)
+            {
+                // Trace a reflection ray.
+                Ray reflectionRay = { OffsetRay(positionWS, surface.geometricNormalWS), reflectedDir };
+                reflection = TraceRadianceRay(reflectionRay, rayInfo.remainingDepth, false).rgb;
+            }
+
+            returnCol += light_reflected_mul * reflection;
+
+        }
+
+        // Trace refraction
+        if (surface.flags8 & MC_BRDF_HAS_REFRACTION)
+        {
+            float3 light_transmitted_mul = fogMul * (1 - surface.baseColor.a);
+
+            // Diff between reflecting pure white and pure black
+            float cutoff = max(0.125, MC_MIN_PERCEPTUAL_DELTA);
+            // Diff between transmitting pure white and pure black
+            if (PerceptualDelta(rayInfo.color * light_transmitted_mul, float3(0,0,0)) > cutoff)
+            {
+                Ray refractionRay = { OffsetRay(positionWS, surface.geometricNormalWS), refractedDir };
+                float3 light_transmitted = TraceRadianceRay(refractionRay, rayInfo.remainingDepth, false).rgb;
+                returnCol += light_transmitted_mul * light_transmitted;
+            }
+            else
+            {
+                // Contribution below perceptual threshold.
+                // Maybe run some simpler shading here.
+            }
+        }   
+    }
+    
+    // TODO modify the alpha value based on uhhh?? transmitance? if necessary
+    return float4(returnCol, surface.baseColor.a);
+}
+
+float4 SkyBox(inout RayInfo rayInfo, float elapsedTime)
+{
+    float3 originWS = rayInfo.originWS;
+    float3 directionWS = rayInfo.directionWS;
+    
+    const float waterY = -0.05f;
+
+    // t where ray intersects water surface
+    float t = (directionWS.y == 0) 
+        ? -1
+        : (waterY - originWS.y) / directionWS.y;
+
+    // Elsewhere, we say "if we run out of recursions, let it go to the miss shader"
+    // (calling TraceRay() but telling it to ignore triangles).
+    // But the miss shader contains the water with reflections, so we need to handle that here
+    // to ensure we don't recurse further!
+
+    if (t < rayInfo.tMin || rayInfo.remainingDepth <= 1)
+    {
+        // Clouds/Sky
+        rayInfo.t = 1.#INF; // value for haze calc
+
+        float3 skyCol = SkyColor(originWS, directionWS, elapsedTime);
+
+        return float4(ApplyWorldHaze(rayInfo, skyCol), 1.f);
+    }
+    else
+    {
+        // Water
+        rayInfo.t = t;
+        
+        float3 normalWS = { 0, 1, 0 };
+        float3 positionWS = originWS + t * directionWS;
+        positionWS.y = waterY;
+
+        BRDF surface = ProcMatWater(positionWS, normalWS, elapsedTime);
+        return ShadeSurface(positionWS, surface, rayInfo, g_sceneCB.lightPosition.xyz);
+    }
+}
+
 //***************************************************************************
 //********************------ Ray gen shader.. -------************************
 //***************************************************************************
@@ -170,7 +378,7 @@ void MyRaygenShader()
  
     // Cast a ray into the scene and retrieve a shaded color.
     UINT remainingRecursionDepth = MAX_RAY_RECURSION_DEPTH;
-    float4 color = TraceRadianceRay(ray, remainingRecursionDepth);
+    float4 color = TraceRadianceRay(ray, remainingRecursionDepth, true);
 
     // Write the raytraced color to the output texture.
     g_renderTarget[DispatchRaysIndex().xy] = color;
@@ -212,7 +420,7 @@ void MyClosestHitShader_Triangle(inout RayPayload rayPayload, in BuiltInTriangle
     {
         // Trace a reflection ray.
         Ray reflectionRay = { HitWorldPosition(), reflect(WorldRayDirection(), triangleNormal) };
-        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.remainingDepth);
+        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.remainingDepth, false);
 
         float3 fresnelR = FresnelReflectanceSchlick(WorldRayDirection(), triangleNormal, l_materialCB.albedo.xyz);
         reflectedColor = l_materialCB.reflectanceCoef * float4(fresnelR, 1) * reflectionColor;
@@ -246,7 +454,7 @@ void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitive
     {
         // Trace a reflection ray.
         Ray reflectionRay = { HitWorldPosition(), reflect(WorldRayDirection(), attr.normal) };
-        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.remainingDepth);
+        float4 reflectionColor = TraceRadianceRay(reflectionRay, rayPayload.remainingDepth, false);
 
         float3 fresnelR = FresnelReflectanceSchlick(WorldRayDirection(), attr.normal, l_materialCB.albedo.xyz);
         reflectedColor = l_materialCB.reflectanceCoef * float4(fresnelR, 1) * reflectionColor;
