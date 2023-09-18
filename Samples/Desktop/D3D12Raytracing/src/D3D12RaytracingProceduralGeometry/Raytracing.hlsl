@@ -16,6 +16,7 @@
 #include "RaytracingHlslCompat.h"
 #include "ProceduralPrimitivesLibrary.hlsli"
 #include "RaytracingShaderHelper.hlsli"
+#include "MillenniumDefines.hlsli"
 
 //***************************************************************************
 //*****------ Shader resources bound via root signatures -------*************
@@ -221,13 +222,10 @@ void MyClosestHitShader_Triangle(inout RayPayload rayPayload, in BuiltInTriangle
     float4 phongColor = CalculatePhongLighting(l_materialCB.albedo, triangleNormal, shadowRayHit, l_materialCB.diffuseCoef, l_materialCB.specularCoef, l_materialCB.specularPower);
     float4 color = checkers * (phongColor + reflectedColor);
 
-    // Apply visibility falloff.
-    // TODO remove
-    float t = RayTCurrent();
-    color = lerp(color, BackgroundColor, 1.0 - exp(-0.000002*t*t*t));
+    rayPayload.t = RayTCurrent();
+    RayInfo rayInfo = RayInfoFromRayIntersection(rayPayload);
 
-    rayPayload.color = color;
-    rayPayload.t = t;
+    rayPayload.color = float4(ApplyWorldHaze(rayInfo, color.rgb), 1);
 }
 
 [shader("closesthit")]
@@ -258,13 +256,10 @@ void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitive
     float4 phongColor = CalculatePhongLighting(l_materialCB.albedo, attr.normal, shadowRayHit, l_materialCB.diffuseCoef, l_materialCB.specularCoef, l_materialCB.specularPower);
     float4 color = phongColor + reflectedColor;
 
-    // Apply visibility falloff.
-    // TODO remove
-    float t = RayTCurrent();
-    color = lerp(color, BackgroundColor, 1.0 - exp(-0.000002*t*t*t));
+    rayPayload.t = RayTCurrent();
+    RayInfo rayInfo = RayInfoFromRayIntersection(rayPayload);
 
-    rayPayload.color = color;
-    rayPayload.t = t;
+    rayPayload.color = float4(ApplyWorldHaze(rayInfo, color.rgb), 1);
 }
 
 //***************************************************************************
@@ -274,8 +269,8 @@ void MyClosestHitShader_AABB(inout RayPayload rayPayload, in ProceduralPrimitive
 [shader("miss")]
 void MyMissShader(inout RayPayload rayPayload)
 {
-    float4 backgroundColor = float4(BackgroundColor);
-    rayPayload.color = backgroundColor;
+    RayInfo rayInfo = RayInfoFromRayIntersection(rayPayload);
+    rayPayload.color = SkyBox(rayInfo, g_sceneCB.elapsedTime);
 }
 
 [shader("miss")]
